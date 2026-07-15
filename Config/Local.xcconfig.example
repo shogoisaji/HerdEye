@@ -1,0 +1,4 @@
+// Copy this file to Config/Local.xcconfig and edit it as needed.
+// Config/Local.xcconfig is ignored by git.
+DEVELOPMENT_TEAM = YOUR_TEAM_ID
+PRODUCT_BUNDLE_IDENTIFIER = com.yourname.HerdEye

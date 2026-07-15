@@ -1,0 +1,8 @@
+// Safe defaults for the public repository.
+// Personal values can override these in Config/Local.xcconfig.
+PRODUCT_BUNDLE_IDENTIFIER = com.example.HerdEye
+DEVELOPMENT_TEAM =
+MARKETING_VERSION = 0.1.0
+CURRENT_PROJECT_VERSION = 1
+
+#include? "Local.xcconfig"
