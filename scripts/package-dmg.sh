@@ -7,9 +7,7 @@
 # without notarizing. This script then packages, notarizes, and staples the DMG.
 #
 # Usage:
-#   export AC_API_KEY_ID=ABCDE12345
-#   export AC_API_KEY_ISSUER=12345678-abcd-...
-#   export AC_API_KEY_PATH=/path/AuthKey_ABCDE12345.p8
+#   export AC_API_KEY_PROFILE=HerdEyeNotary
 #   scripts/package-dmg.sh path/to/exported/HerdEye.app
 #
 # Prerequisites:
@@ -29,10 +27,13 @@ Usage: $(basename "$0") <path/to/HerdEye.app>
 
 Packages a Developer ID-signed HerdEye.app into a notarized, stapled DMG.
 
-Required environment variables:
-  AC_API_KEY_ID      App Store Connect API Key ID
-  AC_API_KEY_ISSUER  App Store Connect Issuer ID
-  AC_API_KEY_PATH    Path to the downloaded AuthKey_<KEYID>.p8
+Notarization credentials:
+  AC_API_KEY_PROFILE  notarytool keychain profile (recommended)
+
+Legacy file-based credentials are also supported:
+  AC_API_KEY_ID       App Store Connect API Key ID
+  AC_API_KEY_ISSUER   App Store Connect Issuer ID
+  AC_API_KEY_PATH     Path to the downloaded AuthKey_<KEYID>.p8
 
 Prerequisites:
   create-dmg:        brew install create-dmg
@@ -51,10 +52,19 @@ APP="$(cd "$(dirname "$APP")" && pwd)/$(basename "$APP")"
 [[ "$(basename "$APP")" == *.app ]] || die "Expected a .app bundle: $APP"
 
 # --- Required environment ----------------------------------------------------
-: "${AC_API_KEY_ID:?AC_API_KEY_ID is required (see -h)}"
-: "${AC_API_KEY_ISSUER:?AC_API_KEY_ISSUER is required (see -h)}"
-: "${AC_API_KEY_PATH:?AC_API_KEY_PATH is required (see -h)}"
-[[ -f "$AC_API_KEY_PATH" ]] || die "API key file not found: $AC_API_KEY_PATH"
+if [[ -n "${AC_API_KEY_PROFILE:-}" ]]; then
+    NOTARY_ARGS=(--keychain-profile "$AC_API_KEY_PROFILE")
+else
+    : "${AC_API_KEY_ID:?AC_API_KEY_ID or AC_API_KEY_PROFILE is required (see -h)}"
+    : "${AC_API_KEY_ISSUER:?AC_API_KEY_ISSUER is required (see -h)}"
+    : "${AC_API_KEY_PATH:?AC_API_KEY_PATH is required (see -h)}"
+    [[ -f "$AC_API_KEY_PATH" ]] || die "API key file not found: $AC_API_KEY_PATH"
+    NOTARY_ARGS=(
+        --key "$AC_API_KEY_PATH"
+        --key-id "$AC_API_KEY_ID"
+        --issuer "$AC_API_KEY_ISSUER"
+    )
+fi
 
 command -v create-dmg >/dev/null 2>&1 || die "create-dmg not found. Install it with: brew install create-dmg"
 
@@ -66,7 +76,9 @@ read_version() {
     [[ -n "$v" ]] || die "Could not read MARKETING_VERSION from $SHARED_XCCONFIG"
     echo "$v"
 }
-VERSION="$(read_version)"
+# Release workflows pass the tag-derived version explicitly. Local packaging
+# continues to use MARKETING_VERSION from Shared.xcconfig by default.
+VERSION="${VERSION:-$(read_version)}"
 
 DMG="$DIST_DIR/HerdEye-${VERSION}.dmg"
 
@@ -111,9 +123,7 @@ fi
 # --- Notarize via App Store Connect API Key ----------------------------------
 echo "▸ Submitting to the notary service (this can take several minutes)..."
 xcrun notarytool submit "$DMG" \
-    --key "$AC_API_KEY_PATH" \
-    --key-id "$AC_API_KEY_ID" \
-    --issuer "$AC_API_KEY_ISSUER" \
+    "${NOTARY_ARGS[@]}" \
     --wait
 
 # --- Staple and validate -----------------------------------------------------

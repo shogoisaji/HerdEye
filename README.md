@@ -98,25 +98,18 @@ xcodegen generate
 xcodebuild -project HerdEye.xcodeproj -scheme HerdEye -configuration Debug CODE_SIGNING_ALLOWED=NO build
 ```
 
-## Distribution (signed and notarized DMG)
+## Distribution (signed and notarized ZIP)
 
-HerdEye is non-sandboxed, so it is distributed outside the App Store as a
-Developer ID-signed, notarized DMG. The archive is built in Xcode locally;
-`scripts/package-dmg.sh` then packages, notarizes, and staples the DMG.
+HerdEye is distributed outside the App Store as a Developer ID-signed and
+notarized ZIP. The release build runs locally so the Developer ID certificate
+and notarization credentials do not need to be stored in GitHub Actions.
 
 ### Prerequisites
 
 - An **Apple Developer Program** membership and a **Developer ID Application**
   certificate installed in Keychain.
 - An **App Store Connect API Key** (App Store Connect → Users and Access → Keys)
-  with Developer access. Download the `.p8` and note its **Key ID** and
-  **Issuer ID**.
-- `create-dmg`:
-
-  ```sh
-  brew install create-dmg
-  ```
-
+  for notarization. Keep the downloaded `.p8` outside the repository.
 - Your signing team and bundle identifier in `Config/Local.xcconfig`:
 
   ```sh
@@ -126,24 +119,75 @@ Developer ID-signed, notarized DMG. The archive is built in Xcode locally;
   #   PRODUCT_BUNDLE_IDENTIFIER = com.<yourname>.HerdEye
   ```
 
-### 1. Export a signed app
+### One-time notarization setup
 
-Generate the Xcode project (see [Build](#build)) and open it in Xcode.
-**Product → Archive**, then in the Organizer choose **Distribute App → Copy App**
-to export a **Developer ID-signed** `.app` (signed, but not yet notarized).
-
-### 2. Package, notarize, and staple
+Store the notarization credentials in the local keychain. This command only
+needs to be run once per Mac:
 
 ```sh
-export AC_API_KEY_ID=ABCDE12345
-export AC_API_KEY_ISSUER=12345678-abcd-...
-export AC_API_KEY_PATH=/path/AuthKey_ABCDE12345.p8
-scripts/package-dmg.sh path/to/exported/HerdEye.app
+xcrun notarytool store-credentials HerdEyeNotary \
+  --key /secure/path/AuthKey_<KEY_ID>.p8 \
+  --key-id <KEY_ID> \
+  --issuer <ISSUER_ID>
 ```
 
-This produces `dist/HerdEye-<version>.dmg`, notarized and stapled.
+The profile name can be changed with `NOTARY_KEYCHAIN_PROFILE`.
 
-### 3. Verify
+### Local release
+
+The release script uses XcodeGen, runs tests, archives the app, signs it with
+the local **Developer ID Application** certificate, submits it to Apple's notary
+service, staples the ticket, creates the Homebrew ZIP, and writes its SHA-256:
+
+```sh
+scripts/release-local.sh 0.1.0
+```
+
+This creates:
+
+- `dist/HerdEye-<version>.zip`
+- `dist/HerdEye-<version>.zip.sha256`
+
+To also create a notarized DMG:
+
+```sh
+scripts/release-local.sh 0.1.0 --dmg
+```
+
+To create a GitHub Release, authenticate the GitHub CLI and add `--publish`.
+The option requires a clean worktree, creates or verifies the `v<version>` tag,
+and uploads the ZIP and SHA-256 file:
+
+```sh
+gh auth login
+scripts/release-local.sh 0.1.0 --publish
+```
+
+The `--dmg` option can be combined with `--publish` to upload the DMG as well.
+
+### Manual DMG packaging
+
+For an already exported Developer ID-signed app, the DMG helper can still be
+used directly. The recommended authentication method is the keychain profile:
+
+```sh
+brew install create-dmg
+AC_API_KEY_PROFILE=HerdEyeNotary \
+  scripts/package-dmg.sh path/to/exported/HerdEye.app
+```
+
+This produces a notarized and stapled `dist/HerdEye-<version>.dmg`.
+
+### Verify a release ZIP
+
+Verify the published checksum before adding it to the Homebrew Cask:
+
+```sh
+cd dist
+shasum -a 256 -c HerdEye-<version>.zip.sha256
+```
+
+For a manually created DMG, use:
 
 ```sh
 xcrun stapler validate dist/HerdEye-<version>.dmg
@@ -152,7 +196,8 @@ spctl --assess -t open --context context:primary-signature dist/HerdEye-<version
 
 ### Distribute
 
-Attach the DMG to a **GitHub Release** (versioned tag), or host it directly.
+Attach the ZIP to a **GitHub Release** (versioned tag), then reference that
+versioned ZIP from the Homebrew Cask.
 
 ## Tests
 

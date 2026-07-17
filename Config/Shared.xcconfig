@@ -1,7 +1,8 @@
 // Safe defaults for the public repository.
 // Personal values can override these in Config/Local.xcconfig.
-PRODUCT_BUNDLE_IDENTIFIER = com.example.HerdEye
-DEVELOPMENT_TEAM =
+DEVELOPMENT_TEAM = B38AC9YT25
+PRODUCT_BUNDLE_IDENTIFIER = com.isaji134.HerdEye
+
 MARKETING_VERSION = 0.1.0
 CURRENT_PROJECT_VERSION = 1
 
