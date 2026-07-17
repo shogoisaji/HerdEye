@@ -23,7 +23,9 @@ jobs:
         run: xcodegen generate
 
       - name: Run Swift tests
-        run: swift test
+        # Swift Testing's parallel runner can stall on GitHub's macOS runner
+        # when several AsyncStream-based tests finish at the same time.
+        run: swift test --no-parallel
 
       - name: Build unsigned app
         run: >-
