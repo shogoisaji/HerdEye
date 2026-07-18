@@ -101,6 +101,8 @@ struct SessionSnapshotResult: Decodable {
 struct SessionSnapshot: Decodable {
     let panes: [PaneInfo]
     let workspaces: [WorkspaceInfo]
+    /// Present on recent herdr builds; same records as `agent.list`.
+    let agents: [PaneInfo]?
 }
 
 /// Data for pane.agent_status_changed (observed: no revision field).
