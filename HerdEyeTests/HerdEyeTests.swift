@@ -404,9 +404,86 @@ struct HerdEyeTests {
         #expect(change.agentStatus == "working")
     }
 
+    @Test("Emits a status-change update for underscored EventKind names")
+    func clientEmitsPaneStatusChangeForUnderscoredEvent() async throws {
+        let transport = StatusChangeTransport(underscoredEventName: true)
+        let client = HerdrClient(
+            transport: transport,
+            config: .init(resubscribeDebounce: .zero, maxBackoff: 0),
+            sleeper: { _ in }
+        )
+        var updates: AsyncStream<PastureUpdate>? = client.updates()
+        var iterator: AsyncStream<PastureUpdate>.AsyncIterator? = updates?.makeAsyncIterator()
+        defer {
+            iterator = nil
+            updates = nil
+        }
+
+        _ = await iterator?.next()
+        _ = await iterator?.next()
+        _ = await iterator?.next()
+
+        let update = try #require(await iterator?.next())
+        guard case .statusChanged(let change) = update else {
+            Issue.record("Expected a status change update from underscored event")
+            return
+        }
+        #expect(change.paneID == "pane:1")
+        #expect(change.agentStatus == "working")
+    }
+
+    @Test("Normalizes underscored herdr EventKind names to dotted form")
+    func normalizesHerdrEventNames() {
+        #expect(HerdrClient.normalizedEventName("pane_agent_detected") == "pane.agent_detected")
+        #expect(HerdrClient.normalizedEventName("pane_agent_status_changed") == "pane.agent_status_changed")
+        #expect(HerdrClient.normalizedEventName("pane_closed") == "pane.closed")
+        #expect(HerdrClient.normalizedEventName("workspace_updated") == "workspace.updated")
+        #expect(HerdrClient.normalizedEventName("pane.agent_detected") == "pane.agent_detected")
+    }
+
+    @Test("Prefers session.snapshot agents array over panes when present")
+    func prefersSnapshotAgentsArray() {
+        let panes = [
+            PaneInfo(paneID: "p1", workspaceID: "w1", agent: nil, agentStatus: "unknown", agentSession: nil),
+            PaneInfo(paneID: "p2", workspaceID: "w1", agent: "codex", agentStatus: "idle", agentSession: nil),
+        ]
+        let agents = [
+            PaneInfo(paneID: "p2", workspaceID: "w1", agent: "codex", agentStatus: "working", agentSession: nil),
+        ]
+        let withAgents = SessionSnapshot(panes: panes, workspaces: [], agents: agents)
+        let withoutAgents = SessionSnapshot(panes: panes, workspaces: [], agents: nil)
+
+        #expect(HerdrClient.snapshotAgentPanes(withAgents).map(\.paneID) == ["p2"])
+        #expect(HerdrClient.snapshotAgentPanes(withAgents).first?.agentStatus == "working")
+        #expect(HerdrClient.snapshotAgentPanes(withoutAgents).map(\.paneID) == ["p1", "p2"])
+    }
+
     @Test("Emits a pane-closed update for the dotted lifecycle event")
     func clientEmitsPaneClosed() async throws {
         let transport = PaneLifecycleTransport(scenario: .closed)
+        let client = HerdrClient(
+            transport: transport,
+            config: .init(resubscribeDebounce: .zero, maxBackoff: 0),
+            sleeper: { _ in }
+        )
+        let updates = client.updates()
+        var iterator = updates.makeAsyncIterator()
+
+        var closedPaneID: String?
+        for _ in 0..<12 {
+            guard let update = await iterator.next() else { break }
+            if case .paneClosed(let paneID) = update {
+                closedPaneID = paneID
+                break
+            }
+        }
+
+        #expect(closedPaneID == "pane:1")
+    }
+
+    @Test("Emits a pane-closed update for underscored EventKind names")
+    func clientEmitsPaneClosedForUnderscoredEvent() async throws {
+        let transport = PaneLifecycleTransport(scenario: .closedUnderscored)
         let client = HerdrClient(
             transport: transport,
             config: .init(resubscribeDebounce: .zero, maxBackoff: 0),
@@ -448,6 +525,30 @@ struct HerdEyeTests {
         }
 
         #expect(detectedPaneID == "pane:1")
+    }
+
+    @Test("Refreshes the snapshot when agent is detected via underscored EventKind")
+    func clientRefreshesSnapshotWhenAgentIsDetectedUnderscored() async throws {
+        let transport = PaneLifecycleTransport(scenario: .detectedUnderscored)
+        let client = HerdrClient(
+            transport: transport,
+            config: .init(resubscribeDebounce: .zero, maxBackoff: 0),
+            sleeper: { _ in }
+        )
+        let updates = client.updates()
+        var iterator = updates.makeAsyncIterator()
+
+        var sawAgent = false
+        for _ in 0..<12 {
+            guard let update = await iterator.next() else { break }
+            if case .snapshot(let panes, _) = update,
+               panes.contains(where: { $0.agent != nil }) {
+                sawAgent = true
+                break
+            }
+        }
+
+        #expect(sawAgent)
     }
 
     @Test("Refreshes the snapshot when an agent pane moves")
@@ -573,6 +674,13 @@ private final class WorkspaceRenameTransport: HerdrTransport, @unchecked Sendabl
 }
 
 private final class StatusChangeTransport: HerdrTransport, @unchecked Sendable {
+    /// When true, emit the wire EventKind name herdr 0.7.x actually pushes.
+    private let underscoredEventName: Bool
+
+    init(underscoredEventName: Bool = false) {
+        self.underscoredEventName = underscoredEventName
+    }
+
     func request(_ method: String, params: [String: JSONValue]) async throws -> HerdrResponse {
         guard method == "session.snapshot" else {
             throw HerdrTransportError.rpcError(code: "unexpected_method", message: method)
@@ -581,9 +689,12 @@ private final class StatusChangeTransport: HerdrTransport, @unchecked Sendable {
     }
 
     func openEventStream(subscriptions: [JSONValue]) -> HerdrEventStream {
+        let eventName = underscoredEventName
+            ? "pane_agent_status_changed"
+            : "pane.agent_status_changed"
         let stream = AsyncThrowingStream<HerdrStreamLine, Error> { continuation in
             continuation.yield(.push(HerdrPushEvent(
-                event: "pane.agent_status_changed",
+                event: eventName,
                 data: .object([
                     "pane_id": .string("pane:1"),
                     "agent_status": .string("working"),
@@ -645,7 +756,9 @@ private final class LegacySnapshotTransport: HerdrTransport, @unchecked Sendable
 private final class PaneLifecycleTransport: HerdrTransport, @unchecked Sendable {
     enum Scenario {
         case closed
+        case closedUnderscored
         case detected
+        case detectedUnderscored
         case moved
     }
 
@@ -669,9 +782,9 @@ private final class PaneLifecycleTransport: HerdrTransport, @unchecked Sendable 
         }
 
         switch scenario {
-        case .closed:
+        case .closed, .closedUnderscored:
             return agentSnapshotResponse(paneID: "pane:1", workspaceID: "workspace-1")
-        case .detected:
+        case .detected, .detectedUnderscored:
             return count == 1
                 ? emptySnapshotResponse()
                 : agentSnapshotResponse(paneID: "pane:1", workspaceID: "workspace-1")
@@ -695,6 +808,11 @@ private final class PaneLifecycleTransport: HerdrTransport, @unchecked Sendable 
                     event: "pane.closed",
                     data: .object(["pane_id": .string("pane:1")])
                 )))
+            case .closedUnderscored where count == 2:
+                continuation.yield(.push(HerdrPushEvent(
+                    event: "pane_closed",
+                    data: .object(["pane_id": .string("pane:1")])
+                )))
             case .detected where count == 1:
                 continuation.yield(.push(HerdrPushEvent(
                     event: "pane.agent_detected",
@@ -702,6 +820,16 @@ private final class PaneLifecycleTransport: HerdrTransport, @unchecked Sendable 
                         "pane_id": .string("pane:1"),
                         "workspace_id": .string("workspace-1"),
                         "agent": .string("agent"),
+                    ])
+                )))
+            case .detectedUnderscored where count == 1:
+                continuation.yield(.push(HerdrPushEvent(
+                    event: "pane_agent_detected",
+                    data: .object([
+                        "pane_id": .string("pane:1"),
+                        "workspace_id": .string("workspace-1"),
+                        "agent": .string("agent"),
+                        "type": .string("pane_agent_detected"),
                     ])
                 )))
             case .moved where count == 2:

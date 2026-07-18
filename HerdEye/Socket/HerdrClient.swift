@@ -144,7 +144,9 @@ final class HerdrClient: @unchecked Sendable {
                 }
                 continue
             }
-            switch push.event {
+            // Subscription types use dotted names (`pane.agent_detected`), but push
+            // envelopes use underscored EventKind names (`pane_agent_detected`).
+            switch Self.normalizedEventName(push.event) {
             case "pane.agent_status_changed":
                 if let data = try? push.data.reencoded(as: AgentStatusChangedData.self) {
                     c.yield(.statusChanged(data))
@@ -183,7 +185,10 @@ final class HerdrClient: @unchecked Sendable {
             do {
                 let resp = try await transport.request("session.snapshot", params: [:])
                 let snap = try (resp.result ?? .null).reencoded(as: SessionSnapshotResult.self)
-                return (snap.snapshot.panes, snap.snapshot.workspaces)
+                // Prefer the dedicated agents array when present (same records as agent.list).
+                // Fall back to panes so older herdr builds and tests keep working.
+                let panes = Self.snapshotAgentPanes(snap.snapshot)
+                return (panes, snap.snapshot.workspaces)
             } catch HerdrTransportError.rpcError(code: "invalid_request", message: _) {
                 legacySnapshot.withLock { $0 = true }
             }
@@ -196,10 +201,31 @@ final class HerdrClient: @unchecked Sendable {
         return (panes, workspaces)
     }
 
+    /// Prefer `snapshot.agents` when herdr provides it; otherwise use panes that have an agent.
+    static func snapshotAgentPanes(_ snapshot: SessionSnapshot) -> [PaneInfo] {
+        if let agents = snapshot.agents, !agents.isEmpty {
+            return agents
+        }
+        return snapshot.panes
+    }
+
     /// Roster targets only panes with detected agents. Including UI helper panes causes
     /// an infinite reconnect loop.
     static func agentPaneIDs(_ panes: [PaneInfo]) -> Set<String> {
         Set(panes.filter { $0.agent != nil }.map(\.paneID))
+    }
+
+    /// Map wire event names to the dotted form used by subscription types and this client.
+    ///
+    /// herdr accepts dotted subscription types (`pane.agent_detected`) but emits underscored
+    /// EventKind values (`pane_agent_detected`) on the push envelope.
+    static func normalizedEventName(_ event: String) -> String {
+        if event.contains(".") { return event }
+        for prefix in ["pane_", "workspace_", "worktree_", "tab_", "layout_"] where event.hasPrefix(prefix) {
+            let resource = String(prefix.dropLast())
+            return resource + "." + event.dropFirst(prefix.count)
+        }
+        return event
     }
 
     /// Subscription list for the known pane set: global event types plus pane-specific
