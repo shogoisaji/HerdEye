@@ -49,6 +49,9 @@ final class StatusBarController {
             let view = BarPopoverView(
                 store: store,
                 settings: settings,
+                onReconnect: { [weak self] in
+                    self?.store.reconnect()
+                },
                 onOpenSettings: { [weak self] in
                     self?.openSettings()
                 },
