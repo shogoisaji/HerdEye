@@ -13,6 +13,7 @@ final class PastureStore {
 
     private let client: HerdrClient
     private var nextOrder = 0
+    private var connectionGeneration = 0
     private var consumeTask: Task<Void, Never>?
 
     init(client: HerdrClient) {
@@ -21,13 +22,27 @@ final class PastureStore {
 
     func start() {
         guard consumeTask == nil else { return }
+        let generation = connectionGeneration
         consumeTask = Task { [weak self] in
             guard let updates = self?.client.updates() else { return }
             for await update in updates {
-                guard let self else { return }
+                guard let self, self.connectionGeneration == generation else { return }
                 self.apply(update)
             }
         }
+    }
+
+    /// Cancel the current subscription and start a fresh connection.
+    ///
+    /// This is the manual counterpart to HerdrClient's automatic retry loop.
+    /// Keep the current agents until the first snapshot of the new connection
+    /// arrives so the popover does not unnecessarily lose its list while retrying.
+    func reconnect() {
+        connectionGeneration += 1
+        consumeTask?.cancel()
+        consumeTask = nil
+        connectionState = .connecting
+        start()
     }
 
     private func apply(_ update: PastureUpdate) {
