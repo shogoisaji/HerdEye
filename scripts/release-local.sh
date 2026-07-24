@@ -170,7 +170,7 @@ mkdir -p "$DIST_DIR"
 rm -f "$ZIP_PATH" "$ZIP_SHA_PATH"
 
 echo "▸ Running Swift tests..."
-(cd "$ROOT_DIR" && swift test)
+(cd "$ROOT_DIR" && swift test --no-parallel)
 
 echo "▸ Creating archive..."
 (cd "$ROOT_DIR" && xcodebuild archive \
