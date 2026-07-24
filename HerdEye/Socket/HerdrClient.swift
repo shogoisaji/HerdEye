@@ -74,7 +74,12 @@ final class HerdrClient: @unchecked Sendable {
                     try await sleeper(config.resubscribeDebounce)
                 case .streamEnded:
                     // The server closed the connection (for example, after a herdr restart):
-                    // back off and reconnect.
+                    // back off and reconnect. Discard the roster so the reconnect subscribes
+                    // with global events only and rebuilds the pane set from a fresh snapshot.
+                    // The previous pane IDs may no longer exist after a restart, and herdr can
+                    // reject pane-specific subscriptions for unknown panes, which would wedge
+                    // reconnection in a permanent failure loop.
+                    roster = []
                     attempt = 1
                     try await backoff(attempt: attempt)
                 }
@@ -82,6 +87,9 @@ final class HerdrClient: @unchecked Sendable {
                 return
             } catch {
                 attempt += 1
+                // Reconnect from a clean slate: a stale pane roster can otherwise make the
+                // resubscription fail repeatedly against a restarted herdr.
+                roster = []
                 logger.warning("connection failed (attempt \(attempt)): \(String(describing: error))")
                 do { try await backoff(attempt: attempt) } catch { return }
             }
