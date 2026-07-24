@@ -602,6 +602,38 @@ struct HerdEyeTests {
         ])
     }
 
+    @Test("Reconnects with global subscriptions after a dropped connection")
+    func clientResetsRosterAfterDroppedConnection() async throws {
+        let transport = RosterResetTransport()
+        let client = HerdrClient(
+            transport: transport,
+            config: .init(resubscribeDebounce: .zero, maxBackoff: 0),
+            sleeper: { _ in }
+        )
+        var updates: AsyncStream<PastureUpdate>? = client.updates()
+        var iterator: AsyncStream<PastureUpdate>.AsyncIterator? = updates?.makeAsyncIterator()
+        defer {
+            iterator = nil
+            updates = nil
+        }
+
+        // Drive the loop across the first connect (adds pane subscriptions), a dropped
+        // stream, and the reconnect that follows it.
+        for _ in 0..<12 {
+            _ = await iterator?.next()
+            if transport.subscriptionSets.count >= 3 { break }
+        }
+
+        let sets = transport.subscriptionSets
+        #expect(sets.count >= 3)
+        // First connection uses global subscriptions only.
+        #expect(HerdrClientTestSupport.paneIDs(in: sets[0]).isEmpty)
+        // Second connection re-subscribes with the discovered pane roster.
+        #expect(HerdrClientTestSupport.paneIDs(in: sets[1]) == ["pane:1"])
+        // After the stream drops, the roster is cleared and the reconnect starts fresh.
+        #expect(HerdrClientTestSupport.paneIDs(in: sets[2]).isEmpty)
+    }
+
     private func makeAgent(label: String, state: AgentState, order: Int) -> PastureAgent {
         PastureAgent(
             identity: AgentIdentity(key: "agent:\(label)"),
@@ -876,6 +908,48 @@ private func agentSnapshotResponse(paneID: String, workspaceID: String) -> Herdr
         ]),
         error: nil
     )
+}
+
+enum HerdrClientTestSupport {
+    /// Extract the pane IDs targeted by `pane.agent_status_changed` subscriptions.
+    static func paneIDs(in subscriptions: [JSONValue]) -> [String] {
+        subscriptions.compactMap { sub in
+            guard case .object(let fields) = sub,
+                  case .string(let paneID)? = fields["pane_id"] else { return nil }
+            return paneID
+        }
+        .sorted()
+    }
+}
+
+/// Records the subscriptions used on each connection and closes every stream immediately,
+/// forcing the client through connect → roster change → dropped stream → reconnect.
+private final class RosterResetTransport: HerdrTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _subscriptionSets: [[JSONValue]] = []
+
+    var subscriptionSets: [[JSONValue]] {
+        lock.withLock { _subscriptionSets }
+    }
+
+    func request(_ method: String, params: [String: JSONValue]) async throws -> HerdrResponse {
+        guard method == "session.snapshot" else {
+            throw HerdrTransportError.rpcError(code: "unexpected_method", message: method)
+        }
+        return agentSnapshotResponse(paneID: "pane:1", workspaceID: "workspace-1")
+    }
+
+    func openEventStream(subscriptions: [JSONValue]) -> HerdrEventStream {
+        lock.withLock { _subscriptionSets.append(subscriptions) }
+        let stream = AsyncThrowingStream<HerdrStreamLine, Error> { continuation in
+            continuation.finish()
+        }
+        return HerdrEventStream(
+            stream: stream,
+            waitUntilSubscribed: {},
+            cancel: {}
+        )
+    }
 }
 
 private final class SubscriptionGateTransport: HerdrTransport, @unchecked Sendable {
