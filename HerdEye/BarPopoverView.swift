@@ -160,7 +160,7 @@ struct DotView: View {
     private func dotShape(_ shape: DotShape) -> AnyShape {
         switch shape {
         case .circle: AnyShape(Circle())
-        case .square: AnyShape(RoundedRectangle(cornerRadius: size * 0.15))
+        case .square: AnyShape(Rectangle())
         }
     }
 }

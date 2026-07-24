@@ -52,17 +52,17 @@ struct DotAppearance: Codable, Equatable {
     var fillColor: DotColor
 
     static let defaultIdle = DotAppearance(
-        shape: .circle, outline: true, outlineColor: DotColor(red: 0.55, green: 0.55, blue: 0.58),
-        fill: false, fillColor: DotColor(red: 0.55, green: 0.55, blue: 0.58))
+        shape: .circle, outline: true, outlineColor: DotColor(red: 1.0, green: 1.0, blue: 1.0),
+        fill: false, fillColor: DotColor(red: 1.0, green: 1.0, blue: 1.0))
     static let defaultWorking = DotAppearance(
-        shape: .square, outline: false, outlineColor: DotColor(red: 0.05, green: 0.6, blue: 1.0),
-        fill: true, fillColor: DotColor(red: 0.05, green: 0.6, blue: 1.0))
+        shape: .square, outline: false, outlineColor: DotColor(red: 1.0, green: 0.85, blue: 0.0),
+        fill: true, fillColor: DotColor(red: 1.0, green: 0.85, blue: 0.0))
     static let defaultBlocked = DotAppearance(
         shape: .square, outline: false, outlineColor: DotColor(red: 1.0, green: 0.15, blue: 0.2),
         fill: true, fillColor: DotColor(red: 1.0, green: 0.15, blue: 0.2))
     static let defaultDone = DotAppearance(
-        shape: .square, outline: false, outlineColor: DotColor(red: 0.2, green: 1.0, blue: 0.3),
-        fill: true, fillColor: DotColor(red: 0.2, green: 1.0, blue: 0.3))
+        shape: .square, outline: false, outlineColor: DotColor(red: 0.4, green: 0.85, blue: 0.95),
+        fill: true, fillColor: DotColor(red: 0.4, green: 0.85, blue: 0.95))
     static let defaultUnknown = DotAppearance(
         shape: .circle, outline: true, outlineColor: DotColor(red: 0.55, green: 0.55, blue: 0.58),
         fill: false, fillColor: DotColor(red: 0.55, green: 0.55, blue: 0.58))
