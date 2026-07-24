@@ -190,7 +190,7 @@ final class StatusBarController {
         case .circle:
             return NSBezierPath(ovalIn: rect)
         case .square:
-            return NSBezierPath(roundedRect: rect, xRadius: 1, yRadius: 1)
+            return NSBezierPath(rect: rect)
         }
     }
 }

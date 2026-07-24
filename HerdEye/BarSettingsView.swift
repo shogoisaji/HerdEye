@@ -170,7 +170,7 @@ struct DotPreview: View {
     private var shape: AnyShape {
         switch appearance.shape {
         case .circle: AnyShape(Circle())
-        case .square: AnyShape(RoundedRectangle(cornerRadius: 2))
+        case .square: AnyShape(Rectangle())
         }
     }
 }
