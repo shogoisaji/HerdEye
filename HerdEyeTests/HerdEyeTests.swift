@@ -602,6 +602,37 @@ struct HerdEyeTests {
         ])
     }
 
+    @Test("Recovers after a dropped connection when the pane roster becomes stale")
+    func clientResetsRosterAndRecoversAfterRestart() async throws {
+        let transport = RestartRosterTransport()
+        let client = HerdrClient(
+            transport: transport,
+            config: .init(resubscribeDebounce: .zero, maxBackoff: 0),
+            sleeper: { _ in }
+        )
+        var updates: AsyncStream<PastureUpdate>? = client.updates()
+        var iterator: AsyncStream<PastureUpdate>.AsyncIterator? = updates?.makeAsyncIterator()
+        defer {
+            iterator = nil
+            updates = nil
+        }
+
+        // After the simulated restart, herdr exposes a new pane ID and rejects
+        // pane-specific subscriptions for the old one. The client must discard the
+        // stale roster on the dropped connection so resubscription can succeed.
+        var sawFreshPane = false
+        for _ in 0..<40 {
+            guard let update = await iterator?.next() else { break }
+            if case .snapshot(let panes, _) = update,
+               panes.contains(where: { $0.paneID == "new:1" }) {
+                sawFreshPane = true
+                break
+            }
+        }
+
+        #expect(sawFreshPane)
+    }
+
     private func makeAgent(label: String, state: AgentState, order: Int) -> PastureAgent {
         PastureAgent(
             identity: AgentIdentity(key: "agent:\(label)"),
@@ -876,6 +907,52 @@ private func agentSnapshotResponse(paneID: String, workspaceID: String) -> Herdr
         ]),
         error: nil
     )
+}
+
+/// Simulates a herdr restart: the exposed pane ID changes and pane-specific
+/// subscriptions for the old pane are rejected, so the client must clear its
+/// roster on a dropped connection to recover.
+private final class RestartRosterTransport: HerdrTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var streamCount = 0
+    private let stalePane = "old:1"
+    private let freshPane = "new:1"
+
+    private var restarted: Bool {
+        lock.withLock { streamCount >= 3 }
+    }
+
+    func request(_ method: String, params: [String: JSONValue]) async throws -> HerdrResponse {
+        guard method == "session.snapshot" else {
+            throw HerdrTransportError.rpcError(code: "unexpected_method", message: method)
+        }
+        let pane = restarted ? freshPane : stalePane
+        return agentSnapshotResponse(paneID: pane, workspaceID: "workspace-1")
+    }
+
+    func openEventStream(subscriptions: [JSONValue]) -> HerdrEventStream {
+        let count = lock.withLock {
+            streamCount += 1
+            return streamCount
+        }
+        let stalePane = stalePane
+        let rejectsStalePane = count >= 3
+            && subscriptions.contains { subscription in
+                guard case .object(let object) = subscription,
+                      case .string(let paneID)? = object["pane_id"] else { return false }
+                return paneID == stalePane
+            }
+        let stream = AsyncThrowingStream<HerdrStreamLine, Error> { $0.finish() }
+        return HerdrEventStream(
+            stream: stream,
+            waitUntilSubscribed: {
+                if rejectsStalePane {
+                    throw HerdrTransportError.rpcError(code: "unknown_pane", message: stalePane)
+                }
+            },
+            cancel: {}
+        )
+    }
 }
 
 private final class SubscriptionGateTransport: HerdrTransport, @unchecked Sendable {

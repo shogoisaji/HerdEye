@@ -14,10 +14,6 @@ struct BarPopoverView: View {
     private var agents: [PastureAgent] { BarAgentSelection.select(store.sortedAgents) }
     private var totalAgentCount: Int { store.sortedAgents.count }
     private var connectionState: ConnectionState { store.connectionState }
-    private var isReconnecting: Bool {
-        if case .reconnecting = connectionState { return true }
-        return false
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -41,14 +37,12 @@ struct BarPopoverView: View {
                 .font(.headline)
             Spacer()
             connectionLabel
-            if isReconnecting {
-                Button(action: onReconnect) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.caption)
-                }
-                .buttonStyle(.borderless)
-                .help("Reconnect")
+            Button(action: onReconnect) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.caption)
             }
+            .buttonStyle(.borderless)
+            .help("Reconnect")
             Button(action: onOpenSettings) {
                 Image(systemName: "gearshape")
                     .font(.caption)
