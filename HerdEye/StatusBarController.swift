@@ -11,6 +11,9 @@ final class StatusBarController {
     private let settings: BarDotSettingsStore
     private let popover: NSPopover
     private var settingsWindow: NSWindow?
+    /// Vnode watcher for herdr.sock create/replace/remove (no polling).
+    private let socketWatcher = HerdrSocketWatcher()
+    private var wakeObserver: NSObjectProtocol?
 
     init() {
         let transport = HerdrSocketTransport()
@@ -30,6 +33,29 @@ final class StatusBarController {
         store.start()
         observeStore()
         observeSettings()
+        startConnectionRecovery()
+    }
+
+    // MARK: - Connection recovery (event-driven, no polling)
+
+    /// Automatically re-establish the herdr subscription when the connection is
+    /// likely dead: after system wake (half-open sockets) or when the herdr
+    /// socket file is replaced/removed. Manual reconnect remains available.
+    private func startConnectionRecovery() {
+        socketWatcher.start { [weak self] in
+            Task { @MainActor in
+                self?.store.reconnect()
+            }
+        }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.store.reconnect()
+            }
+        }
     }
 
     // MARK: - Status Item

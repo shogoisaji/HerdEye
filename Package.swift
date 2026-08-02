@@ -33,6 +33,7 @@ let package = Package(
                 "Socket/HerdrClient.swift",
                 "Socket/HerdrModels.swift",
                 "Socket/HerdrSocketTransport.swift",
+                "Socket/HerdrSocketWatcher.swift",
                 "Socket/HerdrTransport.swift",
                 "Socket/NDJSONLineReader.swift",
                 "Store/PastureReducer.swift",
