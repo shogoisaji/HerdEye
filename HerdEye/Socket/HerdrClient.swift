@@ -22,7 +22,8 @@ enum PastureUpdate {
 /// - events.subscribe can be sent only once per connection, so subscription changes
 ///   require reconnecting.
 /// - Pane-specific subscriptions require pane_id, so maintain a roster of known panes
-///   and reconnect when it changes.
+///   and reconnect only when a newly tracked pane needs a subscription. Removed panes
+///   are dropped from the roster while the current stream remains active.
 final class HerdrClient: @unchecked Sendable {
     struct Config {
         var resubscribeDebounce: Duration = .milliseconds(300)
@@ -70,7 +71,7 @@ final class HerdrClient: @unchecked Sendable {
                 attempt = 0
                 switch end {
                 case .rosterChanged:
-                    // Batch consecutive pane additions and removals before reconnecting.
+                    // Batch changes that require adding pane-specific subscriptions.
                     try await sleeper(config.resubscribeDebounce)
                 case .streamEnded:
                     // The server closed the connection (for example, after a herdr restart):
@@ -90,7 +91,9 @@ final class HerdrClient: @unchecked Sendable {
                 // Reconnect from a clean slate: a stale pane roster can otherwise make the
                 // resubscription fail repeatedly against a restarted herdr.
                 roster = []
-                logger.warning("connection failed (attempt \(attempt)): \(String(describing: error))")
+                logger.warning(
+                    "connection failed (attempt \(attempt)): \(String(describing: error), privacy: .public)"
+                )
                 do { try await backoff(attempt: attempt) } catch { return }
             }
         }
@@ -104,7 +107,7 @@ final class HerdrClient: @unchecked Sendable {
 
     /// Lifecycle of one subscription connection. Wait for the ack, fetch a snapshot,
     /// and keep streaming events.
-    /// Return when the roster changes to trigger reconnection.
+    /// Return when the roster gains a pane and the subscription must be rebuilt.
     private func runConnection(_ c: AsyncStream<PastureUpdate>.Continuation,
                                roster: inout Set<String>) async throws -> ConnectionEnd {
         let subs = Self.subscriptions(for: roster)
@@ -130,11 +133,10 @@ final class HerdrClient: @unchecked Sendable {
             return .rosterChanged
         }
 
-        let currentRoster = roster
-        return try await consumeEvents(eventStream.stream, c: c, roster: currentRoster)
+        return try await consumeEvents(eventStream.stream, c: c, roster: &roster)
     }
 
-    /// Consume events and return when a roster change is detected.
+    /// Consume events and return when a roster change requires a new subscription.
     /// Also validate the ack response line here.
     ///
     /// pane.agent_detected fires repeatedly for transient panes that do not appear in the
@@ -143,7 +145,7 @@ final class HerdrClient: @unchecked Sendable {
     /// Do not revalidate transient panes already confirmed absent while the connection remains open.
     private func consumeEvents(_ stream: AsyncThrowingStream<HerdrStreamLine, Error>,
                                c: AsyncStream<PastureUpdate>.Continuation,
-                               roster: Set<String>) async throws -> ConnectionEnd {
+                               roster: inout Set<String>) async throws -> ConnectionEnd {
         var dismissedPanes = Set<String>()
         for try await line in stream {
             guard case .push(let push) = line else {
@@ -165,21 +167,33 @@ final class HerdrClient: @unchecked Sendable {
                       !roster.contains(paneID), !dismissedPanes.contains(paneID) else { continue }
                 let snap = try await fetchSnapshot()
                 c.yield(.snapshot(panes: snap.panes, workspaces: snap.workspaces))
-                if Self.agentPaneIDs(snap.panes) != roster {
-                    return .rosterChanged
+                let nextRoster = Self.agentPaneIDs(snap.panes)
+                if nextRoster != roster {
+                    let needsNewSubscriptions = !nextRoster.isSubset(of: roster)
+                    roster = nextRoster
+                    if needsNewSubscriptions {
+                        return .rosterChanged
+                    }
                 }
                 dismissedPanes.insert(paneID)
             case "pane.closed":
                 if let data = try? push.data.reencoded(as: PaneLifecycleData.self),
-                   let paneID = data.paneID, roster.contains(paneID) {
+                   let paneID = data.paneID, roster.remove(paneID) != nil {
                     c.yield(.paneClosed(paneID: paneID))
-                    return .rosterChanged
+                    // The current connection may safely retain its now-unused
+                    // subscription. Keep streaming; reconnect only when a future
+                    // roster change requires adding a new pane subscription.
                 }
             case "pane.moved", "workspace.updated", "workspace.renamed", "workspace.closed":
                 let snap = try await fetchSnapshot()
                 c.yield(.snapshot(panes: snap.panes, workspaces: snap.workspaces))
-                if Self.agentPaneIDs(snap.panes) != roster {
-                    return .rosterChanged
+                let nextRoster = Self.agentPaneIDs(snap.panes)
+                if nextRoster != roster {
+                    let needsNewSubscriptions = !nextRoster.isSubset(of: roster)
+                    roster = nextRoster
+                    if needsNewSubscriptions {
+                        return .rosterChanged
+                    }
                 }
             default:
                 break

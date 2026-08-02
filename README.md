@@ -27,6 +27,9 @@ standard herdr socket.
   for each state are adjustable in Settings and persist across launches.
 - **Robust connection.** HerdEye tracks pane lifetimes, re-subscribes when the
   set of known panes changes, and reconnects with backoff if herdr restarts.
+  Dropped connections are also repaired automatically (no polling): after system
+  wake, and when the herdr socket file is replaced or removed. A manual
+  reconnect control remains in the popover as a fallback.
 
 ### Agent states and default appearance
 
@@ -52,8 +55,12 @@ HerdEye connects to the herdr Unix-domain socket
 2. It then streams `pane.agent_status_changed`, `pane.agent_detected`,
    `pane.closed`, `pane.moved`, and workspace lifecycle events to keep the list live.
 3. Because `events.subscribe` can only be sent once per connection, HerdEye
-   reconnects whenever the set of known panes changes, batching rapid changes
-   to avoid churn.
+   reconnects when a newly tracked pane needs a status subscription, batching
+   rapid additions to avoid churn. Closed panes are removed locally without
+   interrupting the current event stream.
+4. Outside the event stream, HerdEye watches the herdr socket path with vnode
+   notifications and listens for system wake so a dead or replaced connection
+   is re-established without timer-based polling.
 
 Only panes with a detected agent are tracked; transient herdr UI helper panes
 are ignored. The communication and state-reduction logic is split into pure,

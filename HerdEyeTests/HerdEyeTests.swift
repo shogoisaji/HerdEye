@@ -602,6 +602,90 @@ struct HerdEyeTests {
         ])
     }
 
+    @Test("Socket identity equality ignores only matching exists+fileID pairs")
+    func socketIdentityEquality() {
+        let missing = HerdrSocketIdentity(exists: false, fileID: nil)
+        let otherMissing = HerdrSocketIdentity(exists: false, fileID: nil)
+        let a = HerdrSocketIdentity(exists: true, fileID: (1, 10))
+        let sameA = HerdrSocketIdentity(exists: true, fileID: (1, 10))
+        let differentIno = HerdrSocketIdentity(exists: true, fileID: (1, 11))
+        let differentDev = HerdrSocketIdentity(exists: true, fileID: (2, 10))
+
+        #expect(missing == otherMissing)
+        #expect(a == sameA)
+        #expect(a != missing)
+        #expect(a != differentIno)
+        #expect(a != differentDev)
+    }
+
+    @Test("Socket identity probe reflects create and replace of a path")
+    func socketIdentityProbeDetectsCreateAndReplace() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("herdeye-socket-identity-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let path = dir.appendingPathComponent("herdr.sock").path
+        #expect(HerdrSocketIdentity.probe(path: path).exists == false)
+
+        FileManager.default.createFile(atPath: path, contents: Data(), attributes: nil)
+        let first = HerdrSocketIdentity.probe(path: path)
+        #expect(first.exists)
+        #expect(first.fileID != nil)
+
+        try FileManager.default.removeItem(atPath: path)
+        #expect(HerdrSocketIdentity.probe(path: path).exists == false)
+
+        FileManager.default.createFile(atPath: path, contents: Data([0x01]), attributes: nil)
+        let second = HerdrSocketIdentity.probe(path: path)
+        #expect(second.exists)
+        // Replaced file must look different so the watcher will fire reconnect.
+        #expect(first != second)
+    }
+
+    @Test("Socket watcher follows missing directories until the socket is created")
+    func socketWatcherFollowsMissingDirectories() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("herdeye-socket-watcher-missing-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let socketDirectory = root.appendingPathComponent("herdr", isDirectory: true)
+        let socketPath = socketDirectory.appendingPathComponent("herdr.sock").path
+        let callback = LockedFlag()
+        let watcher = HerdrSocketWatcher(socketPath: socketPath, debounce: .milliseconds(10))
+        watcher.start { callback.set() }
+        defer { watcher.stop() }
+        try await Task.sleep(for: .milliseconds(200))
+
+        try FileManager.default.createDirectory(at: socketDirectory, withIntermediateDirectories: true)
+        // Allow the watcher to move from the existing ancestor to the newly
+        // created socket directory before creating the socket itself.
+        try await Task.sleep(for: .milliseconds(200))
+        _ = FileManager.default.createFile(atPath: socketPath, contents: Data())
+
+        #expect(await waitForFlag(callback))
+    }
+
+    @Test("Socket watcher remains active after being started again")
+    func socketWatcherCanRestart() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("herdeye-socket-watcher-restart-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let socketPath = directory.appendingPathComponent("herdr.sock").path
+        let callback = LockedFlag()
+        let watcher = HerdrSocketWatcher(socketPath: socketPath, debounce: .milliseconds(10))
+        watcher.start {}
+        watcher.start { callback.set() }
+        defer { watcher.stop() }
+
+        _ = FileManager.default.createFile(atPath: socketPath, contents: Data())
+
+        #expect(await waitForFlag(callback))
+    }
+
     @Test("Recovers after a dropped connection when the pane roster becomes stale")
     func clientResetsRosterAndRecoversAfterRestart() async throws {
         let transport = RestartRosterTransport()
@@ -633,6 +717,47 @@ struct HerdEyeTests {
         #expect(sawFreshPane)
     }
 
+    @Test("Keeps streaming after a pane closes and reconnects with the fresh roster")
+    func clientAvoidsStaleRosterAfterPaneClose() async throws {
+        let transport = RosterMutationTransport()
+        let client = HerdrClient(
+            transport: transport,
+            config: .init(resubscribeDebounce: .zero, maxBackoff: 0),
+            sleeper: { _ in }
+        )
+        var updates: AsyncStream<PastureUpdate>? = client.updates()
+        var iterator: AsyncStream<PastureUpdate>.AsyncIterator? = updates?.makeAsyncIterator()
+        defer {
+            iterator = nil
+            updates = nil
+        }
+
+        var sawClosedPane = false
+        var sawSurvivingPaneUpdate = false
+        var sawFreshPaneUpdate = false
+        for _ in 0..<30 {
+            guard let update = await iterator?.next() else { break }
+            switch update {
+            case .paneClosed(let paneID):
+                sawClosedPane = paneID == "old:1"
+            case .statusChanged(let change) where change.paneID == "keep:1":
+                // This event follows pane.closed in the same stream. Receiving it
+                // proves the client did not reconnect just because a pane vanished.
+                sawSurvivingPaneUpdate = true
+            case .statusChanged(let change) where change.paneID == "fresh:1":
+                sawFreshPaneUpdate = true
+            default:
+                break
+            }
+            if sawClosedPane, sawSurvivingPaneUpdate, sawFreshPaneUpdate { break }
+        }
+
+        #expect(sawClosedPane)
+        #expect(sawSurvivingPaneUpdate)
+        #expect(sawFreshPaneUpdate)
+        #expect(transport.invalidRosterSubscriptionCount == 0)
+    }
+
     private func makeAgent(label: String, state: AgentState, order: Int) -> PastureAgent {
         PastureAgent(
             identity: AgentIdentity(key: "agent:\(label)"),
@@ -648,6 +773,27 @@ struct HerdEyeTests {
     private func connectionState(_ update: PastureUpdate) -> ConnectionState? {
         guard case .connection(let state) = update else { return nil }
         return state
+    }
+
+    private func waitForFlag(_ flag: LockedFlag) async -> Bool {
+        for _ in 0..<100 {
+            if flag.value { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return flag.value
+    }
+}
+
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue = false
+
+    var value: Bool {
+        lock.withLock { storedValue }
+    }
+
+    func set() {
+        lock.withLock { storedValue = true }
     }
 }
 
@@ -885,18 +1031,22 @@ private final class PaneLifecycleTransport: HerdrTransport, @unchecked Sendable 
 }
 
 private func agentSnapshotResponse(paneID: String, workspaceID: String) -> HerdrResponse {
+    agentSnapshotResponse(paneIDs: [paneID], workspaceID: workspaceID)
+}
+
+private func agentSnapshotResponse(paneIDs: [String], workspaceID: String) -> HerdrResponse {
     HerdrResponse(
         id: "snapshot",
         result: .object([
             "snapshot": .object([
-                "panes": .array([
+                "panes": .array(paneIDs.map { paneID in
                     .object([
                         "pane_id": .string(paneID),
                         "workspace_id": .string(workspaceID),
                         "agent": .string("agent"),
                         "agent_status": .string("working"),
                     ])
-                ]),
+                }),
                 "workspaces": .array([
                     .object([
                         "workspace_id": .string(workspaceID),
@@ -907,6 +1057,93 @@ private func agentSnapshotResponse(paneID: String, workspaceID: String) -> Herdr
         ]),
         error: nil
     )
+}
+
+/// Simulates a tracked pane closing, an update for a surviving pane on the same
+/// stream, and then a newly detected pane that requires one fresh subscription.
+private final class RosterMutationTransport: HerdrTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var snapshotCount = 0
+    private var streamCount = 0
+    private var invalidSubscriptionCount = 0
+
+    var invalidRosterSubscriptionCount: Int {
+        lock.withLock { invalidSubscriptionCount }
+    }
+
+    func request(_ method: String, params: [String: JSONValue]) async throws -> HerdrResponse {
+        guard method == "session.snapshot" else {
+            throw HerdrTransportError.rpcError(code: "unexpected_method", message: method)
+        }
+        let count = lock.withLock {
+            snapshotCount += 1
+            return snapshotCount
+        }
+        let panes = count <= 2 ? ["old:1", "keep:1"] : ["keep:1", "fresh:1"]
+        return agentSnapshotResponse(paneIDs: panes, workspaceID: "workspace-1")
+    }
+
+    func openEventStream(subscriptions: [JSONValue]) -> HerdrEventStream {
+        let count = lock.withLock {
+            streamCount += 1
+            return streamCount
+        }
+        let subscribedPanes = Self.paneIDs(in: subscriptions)
+        let invalidRoster = count == 3 && subscribedPanes != ["keep:1", "fresh:1"]
+        if invalidRoster {
+            lock.withLock { invalidSubscriptionCount += 1 }
+        }
+
+        let stream = AsyncThrowingStream<HerdrStreamLine, Error> { continuation in
+            if count == 2 {
+                continuation.yield(Self.lifecycleEvent("pane.closed", paneID: "old:1"))
+                continuation.yield(Self.statusEvent(paneID: "keep:1"))
+                continuation.yield(Self.lifecycleEvent(
+                    "pane.agent_detected", paneID: "fresh:1", agent: "agent"
+                ))
+            } else if count == 3, !invalidRoster {
+                continuation.yield(Self.statusEvent(paneID: "fresh:1"))
+            }
+            continuation.finish()
+        }
+        return HerdrEventStream(
+            stream: stream,
+            waitUntilSubscribed: {
+                if invalidRoster {
+                    throw HerdrTransportError.rpcError(
+                        code: "unknown_pane", message: subscribedPanes.sorted().joined(separator: ",")
+                    )
+                }
+            },
+            cancel: {}
+        )
+    }
+
+    private static func paneIDs(in subscriptions: [JSONValue]) -> Set<String> {
+        Set(subscriptions.compactMap { subscription in
+            guard case .object(let object) = subscription,
+                  case .string(let paneID)? = object["pane_id"] else { return nil }
+            return paneID
+        })
+    }
+
+    private static func lifecycleEvent(
+        _ event: String, paneID: String, agent: String? = nil
+    ) -> HerdrStreamLine {
+        var data: [String: JSONValue] = ["pane_id": .string(paneID)]
+        if let agent { data["agent"] = .string(agent) }
+        return .push(HerdrPushEvent(event: event, data: .object(data)))
+    }
+
+    private static func statusEvent(paneID: String) -> HerdrStreamLine {
+        .push(HerdrPushEvent(
+            event: "pane.agent_status_changed",
+            data: .object([
+                "pane_id": .string(paneID),
+                "agent_status": .string("working"),
+            ])
+        ))
+    }
 }
 
 /// Simulates a herdr restart: the exposed pane ID changes and pane-specific
