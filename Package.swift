@@ -22,6 +22,7 @@ let package = Package(
                 "HerdEyeApp.swift",
                 "HerdEyeIcon.icon",
                 "Info.plist",
+                "LaunchAtLogin.swift",
                 "StatusBarController.swift",
                 "Store/PastureStore.swift",
             ],
