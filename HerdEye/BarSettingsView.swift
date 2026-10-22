@@ -1,12 +1,23 @@
 import SwiftUI
 
-/// Settings window for dot display. Allows changing the appearance for each state.
+/// Settings window for login behavior and dot display.
 struct BarSettingsView: View {
     @Bindable var settings: BarDotSettingsStore
+    var launchAtLogin: LaunchAtLoginController
 
     var body: some View {
+        let isOn = launchAtLogin.isOn
+        let needsApproval = launchAtLogin.needsApproval
+        let errorMessage = launchAtLogin.errorMessage
+
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                generalSection(
+                    isOn: isOn,
+                    needsApproval: needsApproval,
+                    errorMessage: errorMessage
+                )
+
                 Text("Dot Appearance")
                     .font(.headline)
 
@@ -26,7 +37,51 @@ struct BarSettingsView: View {
             }
             .padding(20)
         }
-        .frame(width: 520, height: 520)
+        .frame(width: 520, height: 580)
+    }
+
+    private func generalSection(
+        isOn: Bool,
+        needsApproval: Bool,
+        errorMessage: String?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("General")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("Launch at Login", isOn: Binding(
+                    get: { isOn },
+                    set: { launchAtLogin.setEnabled($0) }
+                ))
+                .toggleStyle(.checkbox)
+
+                Text("Open HerdEye when you log in.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if needsApproval {
+                    Text("Allow HerdEye in System Settings before it can open at login.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Open Login Items Settings") {
+                        launchAtLogin.openLoginItemsSettings()
+                    }
+                    .controlSize(.small)
+                }
+
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .cornerRadius(8)
+        }
     }
 
     /// Get bindings to each state's DotAppearance using @Bindable's $ syntax.

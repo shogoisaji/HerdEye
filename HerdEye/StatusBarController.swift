@@ -9,6 +9,7 @@ final class StatusBarController {
     private let statusItem: NSStatusItem
     private let store: PastureStore
     private let settings: BarDotSettingsStore
+    private let launchAtLogin: LaunchAtLoginController
     private let popover: NSPopover
     private var settingsWindow: NSWindow?
     /// Vnode watcher for herdr.sock create/replace/remove (no polling).
@@ -21,6 +22,7 @@ final class StatusBarController {
             client: HerdrClient(transport: transport)
         )
         self.settings = BarDotSettingsStore()
+        self.launchAtLogin = LaunchAtLoginController()
 
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.popover = NSPopover()
@@ -33,6 +35,7 @@ final class StatusBarController {
         store.start()
         observeStore()
         observeSettings()
+        launchAtLogin.startObservingAppActivation()
         startConnectionRecovery()
     }
 
@@ -99,12 +102,13 @@ final class StatusBarController {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let view = BarSettingsView(settings: settings)
+        launchAtLogin.refresh()
+        let view = BarSettingsView(settings: settings, launchAtLogin: launchAtLogin)
         let hostingController = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hostingController)
         window.title = "HerdEye Settings"
         window.styleMask = [.titled, .closable]
-        window.setContentSize(NSSize(width: 520, height: 520))
+        window.setContentSize(NSSize(width: 520, height: 580))
         window.isReleasedWhenClosed = false
         window.center()
         window.makeKeyAndOrderFront(nil)
